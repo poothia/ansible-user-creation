@@ -1,0 +1,204 @@
+---
+# Playbook: Create User (Demo 3 — Self-Service User Creation)
+#
+# Called from an AAP Job Template with a Survey form.
+# Creates a fully-configured Linux user on the target RHEL 9 VM
+# without anyone SSH-ing into the server.
+#
+# Survey extra_vars:
+#   new_username    (required)  - e.g. "jdoe"
+#   full_name       (required)  - e.g. "Jane Doe"
+#   user_group      (required)  - e.g. "developers"
+#   ssh_public_key  (optional)  - paste the public key
+#   sudo_access     (required)  - "yes" or "no"
+#   user_shell      (optional)  - default /bin/bash
+
+- name: Self-Service User Creation
+  hosts: all
+  become: true
+
+  vars:
+    user_shell: "/bin/bash"
+    ssh_public_key: ""
+    sudo_access: "no"
+    temp_password: "ChangeMe@123"
+
+  tasks:
+
+    # -- Validate inputs --------------------------------------------------
+
+    - name: Validate required inputs
+      ansible.builtin.assert:
+        that:
+          - new_username is defined
+          - new_username | length > 0
+          - full_name is defined
+          - full_name | length > 0
+          - user_group is defined
+          - user_group | length > 0
+        fail_msg: "Required survey fields are missing. Ensure username, full name, and group are provided."
+        success_msg: "All required inputs validated."
+
+    - name: Display provisioning request
+      ansible.builtin.debug:
+        msg: |
+          ======================================
+          Self-Service User Creation Request
+          ======================================
+          Username:    {{ new_username }}
+          Full Name:   {{ full_name }}
+          Group:       {{ user_group }}
+          Shell:       {{ user_shell }}
+          Sudo Access: {{ sudo_access }}
+          SSH Key:     {{ 'Provided' if (ssh_public_key | length > 0) else 'Not provided' }}
+          Target Host: {{ inventory_hostname }}
+          ======================================
+
+    # -- Create group -----------------------------------------------------
+
+    - name: Ensure group exists
+      ansible.builtin.group:
+        name: "{{ user_group }}"
+        state: present
+
+    # -- Create user ------------------------------------------------------
+
+    - name: Create user account
+      ansible.builtin.user:
+        name: "{{ new_username }}"
+        comment: "{{ full_name }}"
+        group: "{{ user_group }}"
+        shell: "{{ user_shell }}"
+        create_home: true
+        password: "{{ temp_password | password_hash('sha512') }}"
+        update_password: on_create
+        state: present
+      register: user_result
+
+    - name: Report user created
+      ansible.builtin.debug:
+        msg: "User '{{ new_username }}' created with home directory {{ user_result.home }}"
+
+    # -- SSH key ----------------------------------------------------------
+
+    - name: Deploy SSH public key
+      when: ssh_public_key | length > 0
+      block:
+        - name: Create .ssh directory
+          ansible.builtin.file:
+            path: "/home/{{ new_username }}/.ssh"
+            state: directory
+            owner: "{{ new_username }}"
+            group: "{{ user_group }}"
+            mode: "0700"
+
+        - name: Add authorized key
+          ansible.builtin.authorized_key:
+            user: "{{ new_username }}"
+            key: "{{ ssh_public_key }}"
+            state: present
+            exclusive: false
+
+        - name: Confirm SSH key deployed
+          ansible.builtin.debug:
+            msg: "SSH public key deployed to /home/{{ new_username }}/.ssh/authorized_keys"
+
+    - name: Skip SSH key (not provided)
+      when: ssh_public_key | length == 0
+      ansible.builtin.debug:
+        msg: "No SSH public key provided — skipping key deployment."
+
+    # -- Sudo access ------------------------------------------------------
+
+    - name: Configure sudo access
+      when: sudo_access == "yes"
+      block:
+        - name: Create sudoers drop-in file
+          ansible.builtin.copy:
+            content: |
+              # Managed by Ansible — Self-Service User Creation
+              # Provisioned for {{ full_name }} ({{ new_username }})
+              {{ new_username }} ALL=(ALL) NOPASSWD: ALL
+            dest: "/etc/sudoers.d/{{ new_username }}"
+            owner: root
+            group: root
+            mode: "0440"
+            validate: "visudo -cf %s"
+
+        - name: Confirm sudo access granted
+          ansible.builtin.debug:
+            msg: "Sudo access granted to '{{ new_username }}' via /etc/sudoers.d/{{ new_username }}"
+
+    - name: Skip sudo (not requested)
+      when: sudo_access != "yes"
+      ansible.builtin.debug:
+        msg: "Sudo access not requested — skipping."
+
+    # -- Welcome banner ---------------------------------------------------
+
+    - name: Create welcome file in home directory
+      ansible.builtin.template:
+        src: templates/user-welcome.j2
+        dest: "/home/{{ new_username }}/WELCOME.txt"
+        owner: "{{ new_username }}"
+        group: "{{ user_group }}"
+        mode: "0644"
+
+    # -- Set password expiry (force change on first login) ----------------
+
+    - name: Force password change on first login
+      ansible.builtin.command:
+        cmd: "chage -d 0 {{ new_username }}"
+      changed_when: true
+
+    # -- Verify -----------------------------------------------------------
+
+    - name: Verify user exists
+      ansible.builtin.command:
+        cmd: "id {{ new_username }}"
+      register: id_output
+      changed_when: false
+
+    - name: Verify home directory
+      ansible.builtin.stat:
+        path: "/home/{{ new_username }}"
+      register: home_stat
+
+    - name: Verify SSH key file (if key was provided)
+      when: ssh_public_key | length > 0
+      ansible.builtin.stat:
+        path: "/home/{{ new_username }}/.ssh/authorized_keys"
+      register: ssh_stat
+
+    - name: Verify sudoers file (if sudo was requested)
+      when: sudo_access == "yes"
+      ansible.builtin.stat:
+        path: "/etc/sudoers.d/{{ new_username }}"
+      register: sudoers_stat
+
+    # -- Summary ----------------------------------------------------------
+
+    - name: Print provisioning summary
+      ansible.builtin.debug:
+        msg: |
+          =============================================
+           USER PROVISIONED SUCCESSFULLY
+          =============================================
+           Username:       {{ new_username }}
+           Full Name:      {{ full_name }}
+           Group:          {{ user_group }}
+           Shell:          {{ user_shell }}
+           Home Directory: /home/{{ new_username }}
+           User ID:        {{ id_output.stdout }}
+           Home Exists:    {{ home_stat.stat.exists }}
+           SSH Key:        {{ 'Deployed' if (ssh_public_key | length > 0) else 'Not configured' }}
+           Sudo Access:    {{ 'Granted (NOPASSWD)' if (sudo_access == 'yes') else 'No' }}
+           Temp Password:  {{ temp_password }}
+           Password Expiry: Must change on first login
+          =============================================
+
+           The user can now log in with:
+             ssh {{ new_username }}@{{ ansible_host | default(inventory_hostname) }}
+
+           Provisioned by AAP — no SSH required.
+          =============================================

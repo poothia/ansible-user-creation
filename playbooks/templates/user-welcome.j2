@@ -1,0 +1,58 @@
+================================================================================
+  Welcome to {{ ansible_hostname | default('this server') }}, {{ full_name }}!
+================================================================================
+
+Your Linux account has been provisioned automatically by
+Ansible Automation Platform. Here are your account details:
+
+  Username:       {{ new_username }}
+  Full Name:      {{ full_name }}
+  Group:          {{ user_group }}
+  Shell:          {{ user_shell }}
+  Home Directory: /home/{{ new_username }}
+  Sudo Access:    {{ 'Yes (NOPASSWD)' if (sudo_access == 'yes') else 'No' }}
+  SSH Key:        {{ 'Configured' if (ssh_public_key | length > 0) else 'Not configured (use password)' }}
+
+  Server:         {{ ansible_host | default(inventory_hostname) }}
+
+--------------------------------------------------------------------------------
+  FIRST LOGIN
+--------------------------------------------------------------------------------
+
+{% if ssh_public_key | length > 0 %}
+  Your SSH public key has been deployed. Connect with:
+
+    ssh {{ new_username }}@{{ ansible_host | default(inventory_hostname) }}
+
+{% else %}
+  You have been assigned a temporary password. Connect with:
+
+    ssh {{ new_username }}@{{ ansible_host | default(inventory_hostname) }}
+
+  You will be asked to change your password on first login.
+{% endif %}
+
+{% if sudo_access == 'yes' %}
+--------------------------------------------------------------------------------
+  SUDO ACCESS
+--------------------------------------------------------------------------------
+
+  You have been granted passwordless sudo. Run privileged commands with:
+
+    sudo <command>
+
+  Use responsibly. All sudo activity is logged.
+{% endif %}
+
+--------------------------------------------------------------------------------
+  PROVISIONED BY
+--------------------------------------------------------------------------------
+
+  Method:     Ansible Automation Platform (Self-Service)
+  Playbook:   create-user.yml
+  Date:       {{ ansible_date_time.iso8601 | default('N/A') }}
+  Host:       {{ inventory_hostname }}
+
+  No one SSH-ed into this server to create your account.
+
+================================================================================
