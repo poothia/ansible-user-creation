@@ -147,6 +147,7 @@
     # -- Set password expiry (force change on first login) ----------------
 
     - name: Force password change on first login
+      when: ssh_public_key | length == 0
       ansible.builtin.command:
         cmd: "chage -d 0 {{ new_username }}"
       changed_when: true
